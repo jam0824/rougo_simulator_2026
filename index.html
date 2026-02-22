@@ -1,0 +1,1737 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>老後資金ギャップ（65歳→死亡）モンテカルロ・シミュレーター（単身）</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif; margin: 16px; line-height: 1.35; }
+    h1 { font-size: 18px; margin: 0 0 12px; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    @media (min-width: 980px) { .grid { grid-template-columns: 440px 1fr; } }
+    .card { border: 1px solid rgba(127,127,127,.35); border-radius: 10px; padding: 12px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    label { display: block; font-size: 12px; opacity: .9; margin-bottom: 4px; }
+    input, select, button, textarea { width: 100%; box-sizing: border-box; padding: 8px; border-radius: 8px; border: 1px solid rgba(127,127,127,.4); background: transparent; }
+    input[type="checkbox"] { width: auto; }
+    button { cursor: pointer; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .actions button { width: auto; padding: 10px 12px; }
+    .small { font-size: 12px; opacity: .85; }
+    .muted { opacity: .75; }
+    details > summary { cursor: pointer; font-weight: 600; margin: 6px 0; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid rgba(127,127,127,.25); padding: 8px 6px; font-size: 12px; text-align: left; vertical-align: top; }
+    th { position: sticky; top: 0; background: rgba(127,127,127,.08); }
+    .pill { display:inline-block; padding:2px 8px; border:1px solid rgba(127,127,127,.35); border-radius:999px; font-size:11px; opacity:.9;}
+    .kpi { display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; }
+    @media (min-width: 760px) { .kpi { grid-template-columns: repeat(4, 1fr); } }
+    .kpi .box { border: 1px solid rgba(127,127,127,.25); border-radius: 10px; padding: 10px; }
+    .kpi .val { font-size: 16px; font-weight: 700; margin-top: 2px; }
+    progress { width: 100%; height: 14px; }
+    canvas { width: 100%; height: 280px; border: 1px solid rgba(127,127,127,.25); border-radius: 10px; }
+    .warn { background: rgba(255,165,0,.12); border: 1px solid rgba(255,165,0,.35); padding: 10px; border-radius: 10px; }
+    .ok { background: rgba(0,255,128,.08); border: 1px solid rgba(0,255,128,.25); padding: 10px; border-radius: 10px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    hr.sep { border:none;border-top:1px solid rgba(127,127,127,.25); margin:12px 0; }
+  </style>
+</head>
+<body>
+  <h1>老後資金ギャップ（65歳→死亡）モンテカルロ・シミュレーター（単身）</h1>
+  <div class="small muted">
+    ・不足額（ギャップ）は「各月の支出 − 収入（年金等）」のプラス分を累計した値（ネット：高額療養費/高額介護/合算の年次還付を反映）。<br/>
+    ・医療は「外来（ベース）＋入院等（ショック）」に分け、70歳以上の外来上限/多数回該当を近似反映。<br/>
+    ・介護は「介護保険サービス（上限対象）＋食費/居住費等（上限対象外）」に分け、高額介護サービス費を適用。<br/>
+  </div>
+
+  <div class="grid" style="margin-top:12px;">
+    <!-- LEFT: Inputs -->
+    <div class="card">
+      <div class="actions">
+        <button id="runBtn">▶ 実行</button>
+        <button id="stopBtn" disabled>■ 停止</button>
+        <button id="saveBtn">設定を保存(JSON)</button>
+        <label style="width:auto;">
+          <input type="file" id="loadFile" accept="application/json" style="display:none;" />
+          <button id="loadBtn" type="button">設定を読込(JSON)</button>
+        </label>
+      </div>
+
+      <div style="margin-top:10px;">
+        <label>進捗</label>
+        <progress id="progress" value="0" max="1"></progress>
+        <div class="small muted" id="progressText">待機中</div>
+      </div>
+
+      <hr class="sep" />
+
+      <div class="row3">
+        <div>
+          <label>試行回数 N</label>
+          <input id="nTrials" type="number" min="100" step="100" value="50000" />
+        </div>
+        <div>
+          <label>乱数シード</label>
+          <input id="seed" type="number" step="1" value="12345" />
+        </div>
+        <div>
+          <label>性別（死亡年齢分布）</label>
+          <select id="sex">
+            <option value="avg" selected>男女平均（簡易）</option>
+            <option value="male">男性</option>
+            <option value="female">女性</option>
+          </select>
+        </div>
+      </div>
+
+      <details open>
+        <summary>収入（年金など）</summary>
+        <div class="row">
+          <div>
+            <label>年金タイプ（初期値セット）</label>
+            <select id="pensionPreset">
+              <option value="kosei" selected>厚生年金 平均（例）</option>
+              <option value="kokumin">国民年金 平均（例）</option>
+              <option value="custom">カスタム</option>
+            </select>
+          </div>
+          <div>
+            <label>年金（月額）</label>
+            <input id="pensionMonthly" type="number" min="0" step="1000" value="147360" />
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>その他収入（月額）</label>
+            <input id="otherIncomeMonthly" type="number" min="0" step="1000" value="0" />
+          </div>
+          <div>
+            <label>年金改定率（年率）</label>
+            <input id="pensionGrowth" type="number" step="0.001" value="0.02" />
+          </div>
+        </div>
+      </details>
+
+      <details open>
+        <summary>生活費・住居（ベース）</summary>
+        <div class="row">
+          <div>
+            <label>生活費（月額・65-69の基準）</label>
+            <input id="livingMonthly" type="number" min="0" step="1000" value="161933" />
+            <div class="small muted">（消費＋非消費をまとめた近似）</div>
+          </div>
+          <div>
+            <label>生活費インフレ（年率）</label>
+            <input id="livingInflation" type="number" step="0.001" value="0.02" />
+          </div>
+        </div>
+
+        <div class="row3" style="margin-top:8px;">
+          <div class="card" style="padding:10px;">
+            <div><span class="pill">年齢スケール</span></div>
+            <div class="small" style="margin-top:6px;">
+              <label><input id="useAgeScale" type="checkbox" checked /> 70代/80代で生活費が下がる</label>
+            </div>
+            <div class="row" style="margin-top:8px;">
+              <div>
+                <label>70代係数</label>
+                <input id="scale70s" type="number" step="0.001" value="0.888" />
+              </div>
+              <div>
+                <label>80+係数</label>
+                <input id="scale80p" type="number" step="0.001" value="0.708" />
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="padding:10px;">
+            <div><span class="pill">住居</span></div>
+            <div style="margin-top:6px;">
+              <label>住居タイプ</label>
+              <select id="housingType">
+                <option value="rent" selected>賃貸</option>
+                <option value="owner_house">持家（戸建）</option>
+                <option value="owner_condo">持家（マンション）</option>
+              </select>
+            </div>
+            <div class="row" style="margin-top:8px;">
+              <div>
+                <label>家賃（月額・賃貸のみ）</label>
+                <input id="rentMonthly" type="number" min="0" step="1000" value="70000" />
+              </div>
+              <div>
+                <label>住居インフレ（年率）</label>
+                <input id="housingInflation" type="number" step="0.001" value="0.02" />
+              </div>
+            </div>
+            <div class="row" style="margin-top:8px;">
+              <div>
+                <label>管理費等（月額・マンションのみ）</label>
+                <input id="condoMonthly" type="number" min="0" step="500" value="13054" />
+              </div>
+              <div>
+                <label>固定資産税等（月額・持家のみ）</label>
+                <input id="propertyTaxMonthly" type="number" min="0" step="1000" value="5000" />
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="padding:10px;">
+            <div><span class="pill">初期資産（任意）</span></div>
+            <div style="margin-top:6px;">
+              <label>初期資産（円）</label>
+              <input id="initialAssets" type="number" min="0" step="100000" value="0" />
+            </div>
+            <div class="row" style="margin-top:8px;">
+              <div>
+                <label>運用期待リターン（年率）</label>
+                <input id="assetReturn" type="number" step="0.001" value="0.00" />
+              </div>
+              <div>
+                <label>運用ボラ（年率）</label>
+                <input id="assetVol" type="number" step="0.001" value="0.00" />
+              </div>
+            </div>
+            <div class="small muted">※運用は簡易（正規近似の月次リターン）。0なら無効。</div>
+          </div>
+        </div>
+      </details>
+
+      <details open>
+        <summary>医療（高額療養費の実テーブル近似 + 多数回該当）</summary>
+        <div class="row3">
+          <div>
+            <label>窓口負担（65-69）</label>
+            <input id="copay6569" type="number" step="0.01" value="0.30" />
+          </div>
+          <div>
+            <label>窓口負担（70-74）</label>
+            <input id="copay7074" type="number" step="0.01" value="0.20" />
+          </div>
+          <div>
+            <label>窓口負担（75+）</label>
+            <input id="copay75p" type="number" step="0.01" value="0.10" />
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:8px;">
+          <div>
+            <label><input id="useHCE" type="checkbox" checked /> 高額療養費を適用</label>
+            <div class="small muted">※70歳以上は「外来上限」も反映（一般/低所得）。</div>
+          </div>
+          <div>
+            <label><input id="useManyTimes" type="checkbox" checked /> 多数回該当（直近12か月で4回目以降）を適用</label>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:8px;">
+          <div>
+            <label>所得区分（70歳未満：ア/イ/ウ/エ/オ）</label>
+            <select id="hceTierUnder70">
+              <option value="A">ア（901万超）</option>
+              <option value="B">イ（600〜901万）</option>
+              <option value="C" selected>ウ（210〜600万）</option>
+              <option value="D">エ（210万以下）</option>
+              <option value="E">オ（住民税非課税）</option>
+            </select>
+          </div>
+          <div>
+            <label>所得区分（70歳以上：現役並み/一般/低所得）</label>
+            <select id="hceTier70p">
+              <option value="G3">現役並みⅢ（課税所得690万以上）</option>
+              <option value="G2">現役並みⅡ（課税所得380万以上）</option>
+              <option value="G1">現役並みⅠ（課税所得145万以上）</option>
+              <option value="GEN" selected>一般</option>
+              <option value="L2">低所得Ⅱ（住民税非課税）</option>
+              <option value="L1">低所得Ⅰ（住民税非課税・より低所得）</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row3" style="margin-top:8px;">
+          <div class="card" style="padding:10px;">
+            <div><span class="pill">外来（ベース）保険診療10割</span></div>
+            <div class="row" style="margin-top:6px;">
+              <div>
+                <label>中央値（円/月）</label>
+                <input id="medOutMedian" type="number" min="0" step="1000" value="50000" />
+              </div>
+              <div>
+                <label>σ（対数）</label>
+                <input id="medOutSigma" type="number" min="0" step="0.05" value="0.80" />
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="padding:10px;">
+            <div><span class="pill">入院等（ショック）保険診療10割</span></div>
+            <div class="row" style="margin-top:6px;">
+              <div>
+                <label>年確率</label>
+                <input id="medShockProb" type="number" step="0.001" value="0.06" />
+              </div>
+              <div>
+                <label>平均継続（月）</label>
+                <input id="medShockMonthsMean" type="number" step="0.1" value="2.0" />
+              </div>
+            </div>
+            <div class="row" style="margin-top:8px;">
+              <div>
+                <label>追加総額 中央値（円/月）</label>
+                <input id="medShockMedian" type="number" step="10000" value="800000" />
+              </div>
+              <div>
+                <label>σ（対数）</label>
+                <input id="medShockSigma" type="number" step="0.05" value="0.70" />
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="padding:10px;">
+            <div><span class="pill">保険外（上限の対象外）</span></div>
+            <div class="row" style="margin-top:6px;">
+              <div>
+                <label>中央値（円/月）</label>
+                <input id="medNonCoveredMedian" type="number" step="1000" value="5000" />
+              </div>
+              <div>
+                <label>σ（対数）</label>
+                <input id="medNonCoveredSigma" type="number" step="0.05" value="0.90" />
+              </div>
+            </div>
+            <div class="row" style="margin-top:8px;">
+              <div>
+                <label>医療インフレ（年率）</label>
+                <input id="medicalInflation" type="number" step="0.001" value="0.03" />
+              </div>
+              <div>
+                <label><input id="useOutAnnualCap" type="checkbox" checked /> 外来年間合算（一般：年14.4万円）</label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <details open>
+        <summary>介護（1〜3割 + 高額介護サービス費）</summary>
+        <div class="row">
+          <div>
+            <label><input id="useCare" type="checkbox" checked /> 介護をモデル化する</label>
+          </div>
+          <div>
+            <label>介護が発生する確率（生涯）</label>
+            <input id="careLifetimeProb" type="number" step="0.01" value="0.45" />
+          </div>
+        </div>
+
+        <div class="row3" style="margin-top:8px;">
+          <div>
+            <label>自己負担割合（介護保険：1〜3割）</label>
+            <select id="careCopayRate">
+              <option value="0.10" selected>1割</option>
+              <option value="0.20">2割</option>
+              <option value="0.30">3割</option>
+            </select>
+          </div>
+          <div>
+            <label>高額介護サービス費（所得区分）</label>
+            <select id="careCapTier">
+              <option value="T5">課税所得690万以上（140,100）</option>
+              <option value="T4">課税所得380〜690万（93,000）</option>
+              <option value="T3" selected>課税所得380万未満（44,400）</option>
+              <option value="T2">住民税非課税（24,600）</option>
+              <option value="T1">非課税（一定以下：15,000）</option>
+            </select>
+          </div>
+          <div>
+            <label><input id="useCareCap" type="checkbox" checked /> 高額介護サービス費を適用</label>
+            <div class="small muted">※食費/居住費などは対象外（別枠で計上）</div>
+          </div>
+        </div>
+
+        <div class="row3" style="margin-top:8px;">
+          <div>
+            <label>開始年齢 平均</label>
+            <input id="careStartMean" type="number" step="0.1" value="82.0" />
+          </div>
+          <div>
+            <label>開始年齢 標準偏差</label>
+            <input id="careStartSd" type="number" step="0.1" value="5.0" />
+          </div>
+          <div>
+            <label>介護インフレ（年率）</label>
+            <input id="careInflation" type="number" step="0.001" value="0.03" />
+          </div>
+        </div>
+
+        <div class="row3" style="margin-top:8px;">
+          <div class="card" style="padding:10px;">
+            <div><span class="pill">介護保険サービス（10割）</span></div>
+            <div class="row" style="margin-top:6px;">
+              <div>
+                <label>中央値（円/月）</label>
+                <input id="careServiceMedian" type="number" step="10000" value="400000" />
+              </div>
+              <div>
+                <label>σ（対数）</label>
+                <input id="careServiceSigma" type="number" step="0.05" value="0.60" />
+              </div>
+            </div>
+            <div class="small muted">※自己負担＝（10割）×負担割合 → 上限適用</div>
+          </div>
+
+          <div class="card" style="padding:10px;">
+            <div><span class="pill">上限対象外（食費/居住費等）</span></div>
+            <div class="row" style="margin-top:6px;">
+              <div>
+                <label>在宅：中央値（円/月）</label>
+                <input id="careNonCovHomeMedian" type="number" step="1000" value="30000" />
+              </div>
+              <div>
+                <label>施設：中央値（円/月）</label>
+                <input id="careNonCovFacilityMedian" type="number" step="1000" value="80000" />
+              </div>
+            </div>
+            <div class="row" style="margin-top:8px;">
+              <div>
+                <label>σ（対数）</label>
+                <input id="careNonCovSigma" type="number" step="0.05" value="0.60" />
+              </div>
+              <div></div>
+            </div>
+          </div>
+
+          <div class="card" style="padding:10px;">
+            <div><span class="pill">開始時 一時費用</span></div>
+            <div style="margin-top:6px;">
+              <label>一時費用（円）</label>
+              <input id="careOneTime" type="number" step="10000" value="472000" />
+            </div>
+            <div class="small muted">※住宅改修・福祉用具など（簡易：上限対象外扱い）</div>
+          </div>
+        </div>
+
+        <div class="row3" style="margin-top:8px;">
+          <div>
+            <label>継続期間（中央値・月）</label>
+            <input id="careDurationMedian" type="number" step="1" value="48" />
+          </div>
+          <div>
+            <label>継続期間 σ（対数）</label>
+            <input id="careDurationSigma" type="number" step="0.05" value="0.60" />
+          </div>
+          <div>
+            <label>施設移行確率（介護開始後）</label>
+            <input id="careFacilityProb" type="number" step="0.01" value="0.25" />
+          </div>
+        </div>
+      </details>
+
+      <details open>
+        <summary>医療×介護の相関（健康状態の潜在変数）</summary>
+        <div class="small muted">試行ごとに「健康リスク」を1つサンプルし、医療費・介護発生・死亡年齢に同時に影響させます（相関の源）。</div>
+        <div class="row3" style="margin-top:8px;">
+          <div>
+            <label>健康リスクのばらつき σ</label>
+            <input id="healthSigma" type="number" step="0.05" value="0.80" />
+          </div>
+          <div>
+            <label>医療費倍率 k（exp(k*z)）</label>
+            <input id="healthToMedK" type="number" step="0.05" value="0.35" />
+          </div>
+          <div>
+            <label>医療ショック確率倍率 k（exp(k*z)）</label>
+            <input id="healthToShockK" type="number" step="0.05" value="0.25" />
+          </div>
+        </div>
+        <div class="row3" style="margin-top:8px;">
+          <div>
+            <label>介護発生確率倍率 k（exp(k*z)）</label>
+            <input id="healthToCareProbK" type="number" step="0.05" value="0.40" />
+          </div>
+          <div>
+            <label>介護開始年齢シフト（年/σ）</label>
+            <input id="healthToCareStartShift" type="number" step="0.1" value="1.5" />
+          </div>
+          <div>
+            <label>死亡ハザード倍率 k（b*=exp(k*z)）</label>
+            <input id="healthToMortK" type="number" step="0.05" value="0.25" />
+          </div>
+        </div>
+      </details>
+
+      <details open>
+        <summary>突発イベント（起きやすい/起きにくい）</summary>
+        <div class="small muted">各イベント：年確率・費用分布（中央値/σ）・クールダウン（月）を編集できます。</div>
+        <div style="margin-top:8px; overflow:auto; max-height: 320px;">
+          <table id="eventsTable">
+            <thead>
+              <tr>
+                <th>ON</th>
+                <th>カテゴリ</th>
+                <th>イベント</th>
+                <th>年確率</th>
+                <th>費用 中央値(円)</th>
+                <th>σ(対数)</th>
+                <th>CD(月)</th>
+                <th>適用</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div class="row3" style="margin-top:10px;">
+          <div>
+            <label>一般インフレ（イベント等の年率）</label>
+            <input id="generalInflation" type="number" step="0.001" value="0.02" />
+          </div>
+          <div>
+            <label>死亡時 葬儀費用（円）</label>
+            <input id="funeralCost" type="number" step="10000" value="1319000" />
+          </div>
+          <div>
+            <label>寿命モデル上限年齢</label>
+            <input id="maxAge" type="number" step="1" value="110" />
+          </div>
+        </div>
+      </details>
+
+      <details open>
+        <summary>年次還付：外来年間合算 / 医療・介護合算（任意）</summary>
+        <div class="row">
+          <div>
+            <label><input id="useCombinedCap" type="checkbox" /> 高額医療・高額介護合算療養費（年額上限）を適用</label>
+            <div class="small muted">※対象は「高額療養費・高額介護サービス費を控除した後の自己負担（上限対象分）」の年合計。</div>
+          </div>
+          <div>
+            <label>年度の開始月（8=8月開始）</label>
+            <input id="fiscalStartMonth" type="number" min="1" max="12" step="1" value="8" />
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>合算所得区分（70歳未満：ア/イ/ウ/エ/オ）</label>
+            <select id="comboTierUnder70">
+              <option value="A">ア（901万超：212万）</option>
+              <option value="B">イ（600〜901万：141万）</option>
+              <option value="C" selected>ウ（210〜600万：67万）</option>
+              <option value="D">エ（210万以下：60万）</option>
+              <option value="E">オ（非課税：34万）</option>
+            </select>
+          </div>
+          <div>
+            <label>合算所得区分（70歳以上：現役並み/一般/低所得）</label>
+            <select id="comboTier70p">
+              <option value="G3">現役並みⅢ（212万）</option>
+              <option value="G2">現役並みⅡ（141万）</option>
+              <option value="G1">現役並みⅠ（67万）</option>
+              <option value="GEN" selected>一般（56万）</option>
+              <option value="L2">低所得Ⅱ（31万）</option>
+              <option value="L1">低所得Ⅰ（19万）</option>
+            </select>
+          </div>
+        </div>
+      </details>
+
+      <details>
+        <summary>寿命（死亡年齢）モデル（Gompertz・簡易キャリブレーション）</summary>
+        <div class="small muted">「65歳時点の平均余命」と「90歳まで生存する確率」からGompertz分布を近似キャリブレーションします。</div>
+        <div class="row3" style="margin-top:8px;">
+          <div>
+            <label>平均余命（65歳時点・年） 男</label>
+            <input id="leMale" type="number" step="0.01" value="19.47" />
+          </div>
+          <div>
+            <label>平均余命（65歳時点・年） 女</label>
+            <input id="leFemale" type="number" step="0.01" value="24.38" />
+          </div>
+          <div>
+            <label>90歳まで生存確率 男</label>
+            <input id="surv90Male" type="number" step="0.001" value="0.258" />
+          </div>
+        </div>
+        <div class="row3" style="margin-top:8px;">
+          <div>
+            <label>90歳まで生存確率 女</label>
+            <input id="surv90Female" type="number" step="0.001" value="0.502" />
+          </div>
+          <div>
+            <label>90歳基準（年齢）</label>
+            <input id="survAge" type="number" step="1" value="90" />
+          </div>
+          <div></div>
+        </div>
+      </details>
+
+      <details>
+        <summary>高度な出力</summary>
+        <label><input id="keepResults" type="checkbox" /> 試行ごとの結果を保持（CSVダウンロード可能・重くなります）</label>
+      </details>
+
+    </div>
+
+    <!-- RIGHT: Outputs -->
+    <div class="card">
+      <div class="kpi">
+        <div class="box">
+          <div class="small muted">不足額 平均</div>
+          <div class="val" id="kpiMean">-</div>
+        </div>
+        <div class="box">
+          <div class="small muted">不足額 中央値</div>
+          <div class="val" id="kpiMedian">-</div>
+        </div>
+        <div class="box">
+          <div class="small muted">不足額 最小</div>
+          <div class="val" id="kpiMin">-</div>
+        </div>
+        <div class="box">
+          <div class="small muted">不足額 最大</div>
+          <div class="val" id="kpiMax">-</div>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px;">
+        <div class="card ok" style="padding:10px;">
+          <div class="small muted">破綻確率（資産が0未満になった割合）</div>
+          <div class="val" id="kpiRuin" style="font-size:16px;font-weight:800;">-</div>
+          <div class="small muted">※初期資産/運用に依存</div>
+        </div>
+        <div class="card" style="padding:10px;">
+          <div class="small muted">追加（参考）</div>
+          <div class="small mono" id="extraStats">-</div>
+          <div class="actions" style="margin-top:8px;">
+            <button id="downloadCsvBtn" disabled>CSVダウンロード（結果保持ON時）</button>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:12px;">
+        <div class="small muted">不足額分布（log10(不足額+1) のヒストグラム）</div>
+        <canvas id="hist" width="980" height="280"></canvas>
+      </div>
+
+      <details style="margin-top:12px;">
+        <summary>注意点</summary>
+        <ul class="small muted">
+          <li>制度の厳密な合算（医療機関別21,000円判定等）までは再現していません。年次合算は「上限対象分の年合計」を近似で還付します。</li>
+          <li>還付は実務上タイムラグがありますが、本ツールでは年度末にまとめて受け取る近似です（資金繰りの厳密再現が必要なら改修）。</li>
+          <li>介護の居住費/食費の軽減（補足給付）や住宅改修の保険給付は、初期版では簡易に“上限対象外”として扱っています。</li>
+        </ul>
+      </details>
+    </div>
+  </div>
+
+<script>
+// ---------------------------
+// UI: Events default list
+// ---------------------------
+const DEFAULT_EVENTS = [
+  { id:"appliance_small", tier:"common", name:"家電故障・買替え（小）", annualProb:0.50, median:50000, sigma:0.75, cooldown:6, applies:"all" },
+  { id:"health_goods", tier:"common", name:"健康関連出費（眼鏡/補聴器/器具など）", annualProb:0.20, median:60000, sigma:0.80, cooldown:12, applies:"all" },
+  { id:"social_small", tier:"common", name:"冠婚葬祭・交際費（まとまった支出）", annualProb:0.25, median:40000, sigma:0.85, cooldown:6, applies:"all" },
+
+  { id:"home_small_repair", tier:"occasional", name:"住居の小修繕（水回り/鍵/小工事など）", annualProb:0.12, median:120000, sigma:0.80, cooldown:18, applies:"owner" },
+  { id:"water_heater", tier:"occasional", name:"給湯器など設備交換", annualProb:0.07, median:180000, sigma:0.60, cooldown:60, applies:"owner" },
+  { id:"move_cost", tier:"occasional", name:"引越し（賃貸のみ）", annualProb:0.03, median:350000, sigma:0.70, cooldown:84, applies:"rent" },
+  { id:"rent_renewal", tier:"occasional", name:"更新料（賃貸のみ）", annualProb:0.50, median:70000, sigma:0.40, cooldown:24, applies:"rent" },
+
+  { id:"home_major", tier:"rare", name:"大規模修繕/リフォーム（持家）", annualProb:0.01, median:480000, sigma:1.10, cooldown:120, applies:"owner" },
+  { id:"disaster", tier:"rare", name:"災害・事故の自己負担（保険外等）", annualProb:0.005, median:500000, sigma:1.00, cooldown:120, applies:"all" },
+  { id:"legal_admin", tier:"rare", name:"法務・手続き費（後見/相続前準備など）", annualProb:0.01, median:150000, sigma:0.90, cooldown:60, applies:"all" },
+];
+
+function yen(n){
+  if (!Number.isFinite(n)) return "-";
+  return new Intl.NumberFormat("ja-JP", { style:"currency", currency:"JPY", maximumFractionDigits:0 }).format(n);
+}
+function pct(n){
+  if (!Number.isFinite(n)) return "-";
+  return (n*100).toFixed(2) + "%";
+}
+
+function buildEventsTable(){
+  const tbody = document.querySelector("#eventsTable tbody");
+  tbody.innerHTML = "";
+  DEFAULT_EVENTS.forEach((ev, idx) => {
+    const tr = document.createElement("tr");
+    tr.dataset.id = ev.id;
+    tr.innerHTML = `
+      <td><input type="checkbox" class="ev_on" ${idx < 9 ? "checked":""}></td>
+      <td><span class="pill">${ev.tier}</span></td>
+      <td>${ev.name}</td>
+      <td><input class="ev_prob" type="number" step="0.001" min="0" max="1" value="${ev.annualProb}"></td>
+      <td><input class="ev_median" type="number" step="1000" min="0" value="${ev.median}"></td>
+      <td><input class="ev_sigma" type="number" step="0.05" min="0" value="${ev.sigma}"></td>
+      <td><input class="ev_cd" type="number" step="1" min="0" value="${ev.cooldown}"></td>
+      <td class="muted">${ev.applies}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function readEventsFromUI(){
+  const rows = [...document.querySelectorAll("#eventsTable tbody tr")];
+  return rows.map(row => {
+    const id = row.dataset.id;
+    const base = DEFAULT_EVENTS.find(e => e.id === id);
+    return {
+      id,
+      tier: base.tier,
+      name: base.name,
+      applies: base.applies,
+      enabled: row.querySelector(".ev_on").checked,
+      annualProb: parseFloat(row.querySelector(".ev_prob").value),
+      median: parseFloat(row.querySelector(".ev_median").value),
+      sigma: parseFloat(row.querySelector(".ev_sigma").value),
+      cooldown: parseInt(row.querySelector(".ev_cd").value, 10),
+    };
+  });
+}
+
+// ---------------------------
+// Worker (single-file via Blob)
+// ---------------------------
+let worker = null;
+let latestResultsForCsv = null;
+
+function makeWorker(){
+  const code = `
+  self.onmessage = (e) => {
+    const msg = e.data;
+    if (msg.type === "run") run(msg.params);
+  };
+
+  // PRNG: Mulberry32
+  function mulberry32(seed){
+    let a = seed >>> 0;
+    return function(){
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+
+  // Box-Muller normal
+  function makeNormal(rng){
+    let spare = null;
+    return function(){
+      if (spare !== null){ const v = spare; spare = null; return v; }
+      let u = 0, v = 0;
+      while (u === 0) u = rng();
+      while (v === 0) v = rng();
+      const mag = Math.sqrt(-2.0 * Math.log(u));
+      const z0 = mag * Math.cos(2.0 * Math.PI * v);
+      const z1 = mag * Math.sin(2.0 * Math.PI * v);
+      spare = z1;
+      return z0;
+    };
+  }
+
+  function clamp(x, lo, hi){ return Math.max(lo, Math.min(hi, x)); }
+
+  function lognormalFromMedianSigma(rngNormal, median, sigma){
+    if (median <= 0) return 0;
+    const mu = Math.log(median);
+    const z = rngNormal();
+    return Math.exp(mu + sigma * z);
+  }
+
+  // Exponential integral E1(x) approximation (x>0)
+  const GAMMA = 0.5772156649015329;
+  function E1(x){
+    if (x <= 0) return Infinity;
+    if (x < 1.0){
+      let termSum = 0;
+      let fact = 1;
+      let xpow = x;
+      for (let k=1; k<=28; k++){
+        fact *= k;
+        const term = ((k % 2 === 1) ? 1 : -1) * xpow / (k * fact);
+        termSum += term;
+        xpow *= x;
+      }
+      return -GAMMA - Math.log(x) + termSum;
+    } else {
+      const n = 22;
+      let sum = 1.0;
+      let term = 1.0;
+      for (let k=1; k<n; k++){
+        term *= -k / x;
+        sum += term;
+      }
+      return Math.exp(-x) / x * sum;
+    }
+  }
+
+  // Gompertz calibration using mean remaining life and survival prob at age
+  function gompertzCalibrate(meanTargetYears, survProbAtAge, baseAge, survAge){
+    const t0 = Math.max(0.01, survAge - baseAge);
+    const p = clamp(survProbAtAge, 1e-6, 0.999999);
+    const meanTarget = Math.max(0.1, meanTargetYears);
+
+    function meanFromC(c){
+      const ec = Math.exp(c*t0);
+      const a = -Math.log(p) / (ec - 1.0);
+      return Math.exp(a) / c * E1(a);
+    }
+
+    let lo = 0.002, hi = 0.25;
+    let flo = meanFromC(lo) - meanTarget;
+    let fhi = meanFromC(hi) - meanTarget;
+
+    if (flo * fhi > 0){
+      const candidates = [0.35, 0.5, 0.8, 1.2];
+      for (const h of candidates){
+        hi = h;
+        fhi = meanFromC(hi) - meanTarget;
+        if (flo * fhi <= 0) break;
+      }
+      if (flo * fhi > 0){
+        hi = 0.08;
+        const c = hi;
+        const a = -Math.log(p) / (Math.exp(c*t0)-1.0);
+        return { b: a*c, c };
+      }
+    }
+
+    for (let i=0;i<60;i++){
+      const mid = (lo+hi)/2;
+      const fmid = meanFromC(mid) - meanTarget;
+      if (flo * fmid <= 0){ hi = mid; fhi = fmid; }
+      else { lo = mid; flo = fmid; }
+    }
+    const c = (lo+hi)/2;
+    const a = -Math.log(p) / (Math.exp(c*t0)-1.0);
+    return { b: a*c, c };
+  }
+
+  function sampleGompertzRemainingYears(rng, b, c){
+    const U = clamp(rng(), 1e-12, 0.999999999999);
+    const inner = 1.0 - (c/b) * Math.log(U);
+    return (1.0/c) * Math.log(inner);
+  }
+
+  function annualToMonthlyProb(p){
+    p = clamp(p, 0, 1);
+    return 1.0 - Math.pow(1.0 - p, 1.0/12.0);
+  }
+
+  // High-cost medical expense limits (Japan) - values from municipal published tables
+  // Under 70 categories A-E (Edogawa 2025-08)
+  const HCE_UNDER70 = {
+    A: { base:252600, thr:842000, pct:0.01, multi:140100 },
+    B: { base:167400, thr:558000, pct:0.01, multi:93000 },
+    C: { base:80100,  thr:267000, pct:0.01, multi:44400 },
+    D: { fixed:57600, multi:44400 },
+    E: { fixed:35400, multi:24600 },
+  };
+
+  // Age 70+ categories (Misato published)
+  const HCE_70P = {
+    G3: { base:252600, thr:842000, pct:0.01, multi:140100, outCap:null, annualOutCap:null },
+    G2: { base:167400, thr:558000, pct:0.01, multi:93000,  outCap:null, annualOutCap:null },
+    G1: { base:80100,  thr:267000, pct:0.01, multi:44400,  outCap:null, annualOutCap:null },
+    GEN:{ fixed:57600, multi:44400, outCap:18000, annualOutCap:144000 },
+    L2: { fixed:24600, multi:null,  outCap:8000,  annualOutCap:null },
+    L1: { fixed:15000, multi:null,  outCap:8000,  annualOutCap:null },
+  };
+
+  // High-cost care service fee (monthly cap for covered copay)
+  const CARE_CAP = {
+    T5: 140100,
+    T4: 93000,
+    T3: 44400,
+    T2: 24600,
+    T1: 15000,
+  };
+
+  // Annual combined medical+care cap (Aug-Jul) - values from municipal tables
+  const COMBO_UNDER70 = {
+    A: 2120000,
+    B: 1410000,
+    C:  670000,
+    D:  600000,
+    E:  340000,
+  };
+  const COMBO_70P = {
+    G3: 2120000,
+    G2: 1410000,
+    G1:  670000,
+    GEN: 560000,
+    L2:  310000,
+    L1:  190000,
+  };
+
+  function copayRateForAge(age, p){
+    if (age < 70) return p.copay6569;
+    if (age < 75) return p.copay7074;
+    return p.copay75p;
+  }
+
+  function hceLimitUnder70(tier, totalInsured, useManyTimes, manyTimesActive){
+    const t = HCE_UNDER70[tier] || HCE_UNDER70.C;
+    if (useManyTimes && manyTimesActive && t.multi != null) return t.multi;
+    if (t.fixed != null) return t.fixed;
+    const extra = Math.max(0, totalInsured - t.thr) * t.pct;
+    return t.base + extra;
+  }
+
+  function hceLimit70p(tier, totalInsured, useManyTimes, manyTimesActive){
+    const t = HCE_70P[tier] || HCE_70P.GEN;
+    if (useManyTimes && manyTimesActive && t.multi != null) return t.multi;
+    if (t.fixed != null) return t.fixed;
+    const extra = Math.max(0, totalInsured - t.thr) * t.pct;
+    return t.base + extra;
+  }
+
+  function run(p){
+    const tStart = Date.now();
+    const N = Math.max(100, Math.min(200000, p.nTrials|0));
+    const seed = (p.seed|0) >>> 0;
+    const rng = mulberry32(seed);
+    const rngN = makeNormal(rng);
+
+    const baseAge = 65;
+    const maxAge = p.maxAge;
+
+    // Mortality calibration
+    const survAge = p.survAge;
+    const mort = p.mortality;
+    let meanLE, survP;
+    if (p.sex === "male"){ meanLE = mort.leMale; survP = mort.surv90Male; }
+    else if (p.sex === "female"){ meanLE = mort.leFemale; survP = mort.surv90Female; }
+    else { meanLE = (mort.leMale + mort.leFemale)/2; survP = (mort.surv90Male + mort.surv90Female)/2; }
+    const gomBase = gompertzCalibrate(meanLE, survP, baseAge, survAge);
+
+    // inflation factors per month
+    const livingInfl = Math.pow(1 + p.livingInflation, 1/12);
+    const housingInfl = Math.pow(1 + p.housingInflation, 1/12);
+    const medicalInfl = Math.pow(1 + p.medicalInflation, 1/12);
+    const careInfl = Math.pow(1 + p.careInflation, 1/12);
+    const generalInfl = Math.pow(1 + p.generalInflation, 1/12);
+    const pensionInfl = Math.pow(1 + p.pensionGrowth, 1/12);
+
+    // asset return
+    const useAssets = p.initialAssets > 0 || p.assetReturn !== 0 || p.assetVol !== 0;
+    const muM = Math.pow(1 + p.assetReturn, 1/12) - 1;
+    const sigM = p.assetVol / Math.sqrt(12);
+
+    // outputs
+    const gaps = new Float64Array(N);
+    const ruins = new Uint8Array(N);
+    const deathAges = new Float32Array(N);
+    const refundTotals = new Float64Array(N);
+
+    // optional outputs
+    const medTotals = new Float64Array(N);
+    const careTotals = new Float64Array(N);
+
+    // histogram (log10(gap+1))
+    const histBins = 50;
+    const histCounts = new Uint32Array(histBins);
+    const histMin = 0;
+    const histMax = 8;
+    const histW = (histMax - histMin) / histBins;
+
+    // events
+    const events = p.events.filter(ev => ev.enabled).map(ev => ({
+      id: ev.id,
+      applies: ev.applies,
+      pM: annualToMonthlyProb(ev.annualProb),
+      median: ev.median,
+      sigma: ev.sigma,
+      cooldown: Math.max(0, ev.cooldown|0),
+    }));
+
+    // fiscal year offset (Aug=8 -> index 7 as end month)
+    const fiscalStart = clamp(p.fiscalStartMonth, 1, 12);
+    const fiscalStartIdx = fiscalStart - 1; // 0-11
+
+    function isFiscalYearEnd(m){
+      // monthIndex m corresponds to calendar month = (fiscalStartIdx + m) % 12
+      // fiscal year ends at month (fiscalStartIdx + 11)
+      return ((fiscalStartIdx + m) % 12) === ((fiscalStartIdx + 11) % 12);
+    }
+
+    function sampleCareSchedule(deathAgeYears, z){
+      if (!p.useCare) return null;
+
+      // health affects probability
+      const probAdj = clamp(p.careLifetimeProb * Math.exp(p.healthToCareProbK * z), 0, 0.999999);
+      if (rng() > probAdj) return null;
+
+      // health affects start age (frailer -> earlier)
+      const meanAdj = p.careStartMean - p.healthToCareStartShift * z;
+      let startAge = meanAdj + p.careStartSd * rngN();
+      startAge = clamp(startAge, baseAge, Math.min(maxAge, deathAgeYears));
+      const startMonth = Math.floor((startAge - baseAge) * 12);
+
+      let dur = Math.floor(lognormalFromMedianSigma(rngN, p.careDurationMedian, p.careDurationSigma));
+      dur = clamp(dur, 1, 12*30);
+      const endMonth = Math.min(startMonth + dur, Math.floor((deathAgeYears - baseAge) * 12) + 1);
+
+      const facility = (rng() < clamp(p.careFacilityProb, 0, 1));
+      return { startMonth, endMonth, facility };
+    }
+
+    function calcMedicalOOP(age, outInsured, inInsured, tierUnder70, tier70p, hceState){
+      const rate = copayRateForAge(age, p);
+      const outRaw = outInsured * rate;
+      const inRaw = inInsured * rate;
+      const totalInsured = outInsured + inInsured;
+
+      if (!p.useHCE){
+        return { oopInsured: outRaw + inRaw, outPaid: outRaw, triggered: false, usedCap: Infinity, annualOutCap: null };
+      }
+
+      // determine normal cap (without many-times) for deciding trigger & count
+      let normalCap, cap, outCap = null, annualOutCap = null;
+      let multiCap = null;
+
+      if (age < 70){
+        const t = HCE_UNDER70[tierUnder70] || HCE_UNDER70.C;
+        if (t.fixed != null) normalCap = t.fixed;
+        else normalCap = t.base + Math.max(0, totalInsured - t.thr) * t.pct;
+        multiCap = t.multi;
+      } else {
+        const t = HCE_70P[tier70p] || HCE_70P.GEN;
+        outCap = t.outCap;
+        annualOutCap = t.annualOutCap;
+        if (t.fixed != null) normalCap = t.fixed;
+        else normalCap = t.base + Math.max(0, totalInsured - t.thr) * t.pct;
+        multiCap = t.multi;
+      }
+
+      // apply outpatient cap first (70+ general/low) for outpatient portion
+      let outPaid = outRaw;
+      let outpatientCapped = false;
+      if (age >= 70 && outCap != null){
+        if (outPaid > outCap){ outPaid = outCap; outpatientCapped = true; }
+      }
+
+      const totalAfterOutCap = outPaid + inRaw;
+
+      // decide many-times eligibility
+      const wouldTrigger = (totalAfterOutCap > normalCap) || outpatientCapped;
+      const manyTimesActive = p.useManyTimes && wouldTrigger && (hceState.count >= 3) && (multiCap != null);
+
+      if (age < 70) cap = hceLimitUnder70(tierUnder70, totalInsured, p.useManyTimes, manyTimesActive);
+      else cap = hceLimit70p(tier70p, totalInsured, p.useManyTimes, manyTimesActive);
+
+      const oopInsured = Math.min(totalAfterOutCap, cap);
+      const triggered = (oopInsured < totalAfterOutCap) || outpatientCapped;
+
+      // update many-times ring buffer (counts months where any high-cost triggered)
+      const flag = triggered ? 1 : 0;
+      hceState.count += flag - hceState.ring[hceState.idx];
+      hceState.ring[hceState.idx] = flag;
+      hceState.idx = (hceState.idx + 1) % 12;
+
+      return { oopInsured, outPaid, triggered, usedCap: cap, annualOutCap };
+    }
+
+    function careMonthlyCap(tier){ return CARE_CAP[tier] ?? CARE_CAP.T3; }
+
+    function comboAnnualCap(age){
+      if (age < 70) return COMBO_UNDER70[p.comboTierUnder70] ?? COMBO_UNDER70.C;
+      return COMBO_70P[p.comboTier70p] ?? COMBO_70P.GEN;
+    }
+
+    const chunk = 1000;
+
+    for (let i=0;i<N;i++){
+      // latent health factor z
+      const z = (p.healthSigma > 0) ? (p.healthSigma * rngN()) : 0;
+
+      // health-adjusted mortality (b scaled)
+      const bAdj = gomBase.b * Math.exp(p.healthToMortK * z);
+      const remYears = sampleGompertzRemainingYears(rng, bAdj, gomBase.c);
+      let deathAge = baseAge + remYears;
+      deathAge = clamp(deathAge, baseAge + 0.01, maxAge);
+      deathAges[i] = deathAge;
+
+      const deathMonth = Math.floor((deathAge - baseAge) * 12);
+      const care = sampleCareSchedule(deathAge, z);
+
+      // track HCE many-times state (12-month rolling)
+      const hceState = { ring: new Uint8Array(12), idx: 0, count: 0 };
+
+      // annual tracking
+      let outAnnualSum = 0;       // outpatient-only paid (70+ general) for annual cap
+      let coveredAnnualSum = 0;   // covered (insured) OOP: medical insured oop + care service oop after caps
+
+      let asset = p.initialAssets;
+      let gap = 0;
+      let ruined = 0;
+
+      let pensionM = p.pensionMonthly;
+      let otherIncomeM = p.otherIncomeMonthly;
+
+      // event cooldown trackers
+      const cd = Object.create(null);
+      for (const ev of events) cd[ev.id] = 0;
+
+      // medical shock state
+      let shockRemaining = 0;
+
+      let totalRefund = 0;
+      let totalMed = 0;
+      let totalCare = 0;
+
+      for (let m=0; m<=deathMonth; m++){
+        const age = baseAge + m/12;
+
+        // income
+        let income = (pensionM + otherIncomeM);
+
+        // living
+        let living = p.livingMonthly * Math.pow(livingInfl, m);
+        if (p.useAgeScale){
+          if (age >= 80) living *= p.scale80p;
+          else if (age >= 70) living *= p.scale70s;
+        }
+
+        // housing
+        let housing = 0;
+        const hType = p.housingType;
+        if (hType === "rent"){
+          housing += p.rentMonthly * Math.pow(housingInfl, m);
+        } else {
+          housing += p.propertyTaxMonthly * Math.pow(housingInfl, m);
+          if (hType === "owner_condo") housing += p.condoMonthly * Math.pow(housingInfl, m);
+        }
+
+        // medical insured (outpatient + inpatient shock)
+        const medMult = Math.exp(p.healthToMedK * z);
+        const shockProbMult = Math.exp(p.healthToShockK * z);
+
+        const outInsured = lognormalFromMedianSigma(rngN, p.medOutMedian, p.medOutSigma) * Math.pow(medicalInfl, m) * medMult;
+
+        if (shockRemaining <= 0){
+          const baseProb = annualToMonthlyProb(p.medShockProb);
+          const ageMult = (age >= 85 ? 1.4 : age >= 80 ? 1.25 : age >= 75 ? 1.12 : 1.0);
+          const pShockM = clamp(baseProb * ageMult * shockProbMult, 0, 0.95);
+          if (rng() < pShockM){
+            const meanMonths = Math.max(0.5, p.medShockMonthsMean);
+            const dur = Math.max(1, Math.floor(-Math.log(1 - clamp(rng(),1e-12,0.999999)) * meanMonths));
+            shockRemaining = dur;
+          }
+        }
+
+        let inInsured = 0;
+        if (shockRemaining > 0){
+          inInsured = lognormalFromMedianSigma(rngN, p.medShockMedian, p.medShockSigma) * Math.pow(medicalInfl, m) * medMult;
+          shockRemaining--;
+        }
+
+        const medRes = calcMedicalOOP(age, outInsured, inInsured, p.hceTierUnder70, p.hceTier70p, hceState);
+        let medInsuredOOP = medRes.oopInsured;
+
+        // non-covered
+        const nonCovered = lognormalFromMedianSigma(rngN, p.medNonCoveredMedian, p.medNonCoveredSigma) * Math.pow(medicalInfl, m);
+        const medOOP = medInsuredOOP + nonCovered;
+        totalMed += medOOP;
+
+        // annual outpatient cap accumulation (70+ general only, outpatient-only months)
+        const eligibleOutAnnual = p.useOutAnnualCap && age >= 70 && p.hceTier70p === "GEN" && (inInsured === 0);
+        if (eligibleOutAnnual){
+          outAnnualSum += medRes.outPaid;
+        }
+
+        // care
+        let careServiceCopay = 0;
+        let careNonCovered = 0;
+        let careOOP = 0;
+
+        if (care && m >= care.startMonth && m < care.endMonth){
+          const svcTotal = lognormalFromMedianSigma(rngN, p.careServiceMedian, p.careServiceSigma) * Math.pow(careInfl, m);
+          const copayRaw = svcTotal * p.careCopayRate;
+          const cap = p.useCareCap ? careMonthlyCap(p.careCapTier) : Infinity;
+          careServiceCopay = Math.min(copayRaw, cap);
+
+          const ncMedian = care.facility ? p.careNonCovFacilityMedian : p.careNonCovHomeMedian;
+          careNonCovered = lognormalFromMedianSigma(rngN, ncMedian, p.careNonCovSigma) * Math.pow(careInfl, m);
+
+          if (m === care.startMonth){
+            careNonCovered += p.careOneTime * Math.pow(careInfl, m);
+          }
+
+          careOOP = careServiceCopay + careNonCovered;
+        }
+
+        totalCare += careOOP;
+
+        // covered annual sum (for combined cap)
+        coveredAnnualSum += medInsuredOOP + careServiceCopay;
+
+        // random events
+        let evCost = 0;
+        for (const ev of events){
+          if (ev.applies === "rent" && hType !== "rent") continue;
+          if (ev.applies === "owner" && hType === "rent") continue;
+          if (cd[ev.id] > 0){ cd[ev.id]--; continue; }
+          if (rng() < ev.pM){
+            evCost += lognormalFromMedianSigma(rngN, ev.median, ev.sigma) * Math.pow(generalInfl, m);
+            cd[ev.id] = ev.cooldown;
+          }
+        }
+
+        // funeral
+        let funeral = 0;
+        if (m === deathMonth) funeral = p.funeralCost * Math.pow(generalInfl, m);
+
+        // year-end refunds (annual outpatient cap + combined cap)
+        let refund = 0;
+        if (isFiscalYearEnd(m) || m === deathMonth){
+          // outpatient annual cap
+          if (eligibleOutAnnual){
+            const capY = HCE_70P.GEN.annualOutCap;
+            if (capY != null && outAnnualSum > capY){
+              const r = outAnnualSum - capY;
+              refund += r;
+              coveredAnnualSum -= r; // since coveredAnnualSum included these outpatient payments
+            }
+          }
+          outAnnualSum = 0;
+
+          // combined annual cap
+          if (p.useCombinedCap){
+            const cap = comboAnnualCap(age);
+            if (coveredAnnualSum > cap){
+              refund += (coveredAnnualSum - cap);
+            }
+          }
+          coveredAnnualSum = 0;
+
+          if (refund > 0){
+            income += refund;
+            totalRefund += refund;
+          }
+        }
+
+        const expense = living + housing + medOOP + careOOP + evCost + funeral;
+
+        const shortfall = Math.max(0, expense - income);
+        gap += shortfall;
+
+        if (useAssets){
+          asset += (income - expense);
+          if (p.assetReturn !== 0 || p.assetVol !== 0){
+            const r = muM + sigM * rngN();
+            asset *= (1 + r);
+          }
+          if (asset < 0 && !ruined) ruined = 1;
+        }
+
+        // update income for next month
+        pensionM *= pensionInfl;
+        otherIncomeM *= pensionInfl;
+      }
+
+      gaps[i] = gap;
+      ruins[i] = ruined;
+      refundTotals[i] = totalRefund;
+      medTotals[i] = totalMed;
+      careTotals[i] = totalCare;
+
+      const lg = Math.log10(gap + 1);
+      let b = Math.floor((lg - histMin) / histW);
+      b = Math.max(0, Math.min(histBins - 1, b));
+      histCounts[b]++;
+
+      if ((i+1) % chunk === 0){
+        self.postMessage({type:"progress", done:i+1, total:N});
+      }
+    }
+
+    // stats
+    const gapsArr = Array.from(gaps);
+    gapsArr.sort((a,b)=>a-b);
+    const min = gapsArr[0];
+    const max = gapsArr[gapsArr.length-1];
+    const mean = gapsArr.reduce((s,x)=>s+x,0) / gapsArr.length;
+    const median = (gapsArr.length % 2 === 1)
+      ? gapsArr[(gapsArr.length-1)/2]
+      : 0.5 * (gapsArr[gapsArr.length/2 - 1] + gapsArr[gapsArr.length/2]);
+
+    function percentile(pct){
+      const idx = Math.floor((gapsArr.length-1) * pct);
+      return gapsArr[idx];
+    }
+
+    let ruinCount = 0;
+    for (let i=0;i<N;i++) ruinCount += ruins[i];
+
+    const deathMean = Array.from(deathAges).reduce((s,x)=>s+x,0) / N;
+    const refundMean = Array.from(refundTotals).reduce((s,x)=>s+x,0) / N;
+    const medMean = Array.from(medTotals).reduce((s,x)=>s+x,0) / N;
+    const careMean = Array.from(careTotals).reduce((s,x)=>s+x,0) / N;
+
+    const elapsedMs = Date.now() - tStart;
+
+    const payload = {
+      type:"done",
+      summary:{
+        N, mean, median, min, max,
+        p10: percentile(0.10), p25: percentile(0.25), p75: percentile(0.75), p90: percentile(0.90), p95: percentile(0.95),
+        ruinProb: ruinCount / N,
+        deathMean,
+        refundMean,
+        medMean,
+        careMean,
+        elapsedMs,
+        gompertz: gomBase,
+      },
+      histogram:{ bins: histBins, min: histMin, max: histMax, counts: Array.from(histCounts) }
+    };
+
+    if (p.keepResults){
+      payload.results = { gaps, ruins, deathAges, refundTotals, medTotals, careTotals };
+      self.postMessage(payload, [gaps.buffer, ruins.buffer, deathAges.buffer, refundTotals.buffer, medTotals.buffer, careTotals.buffer]);
+    } else {
+      self.postMessage(payload);
+    }
+  }
+  `;
+
+  const blob = new Blob([code], { type: "text/javascript" });
+  const url = URL.createObjectURL(blob);
+  return new Worker(url);
+}
+
+// ---------------------------
+// Collect parameters
+// ---------------------------
+function num(id){ return parseFloat(document.getElementById(id).value); }
+function intv(id){ return parseInt(document.getElementById(id).value, 10); }
+function bool(id){ return document.getElementById(id).checked; }
+function val(id){ return document.getElementById(id).value; }
+
+function gatherParams(){
+  return {
+    nTrials: intv("nTrials"),
+    seed: intv("seed"),
+    sex: val("sex"),
+    maxAge: intv("maxAge"),
+    survAge: intv("survAge"),
+    mortality: {
+      leMale: num("leMale"),
+      leFemale: num("leFemale"),
+      surv90Male: num("surv90Male"),
+      surv90Female: num("surv90Female"),
+    },
+
+    // income
+    pensionMonthly: num("pensionMonthly"),
+    otherIncomeMonthly: num("otherIncomeMonthly"),
+    pensionGrowth: num("pensionGrowth"),
+
+    // living/housing
+    livingMonthly: num("livingMonthly"),
+    livingInflation: num("livingInflation"),
+    useAgeScale: bool("useAgeScale"),
+    scale70s: num("scale70s"),
+    scale80p: num("scale80p"),
+
+    housingType: val("housingType"),
+    rentMonthly: num("rentMonthly"),
+    condoMonthly: num("condoMonthly"),
+    propertyTaxMonthly: num("propertyTaxMonthly"),
+    housingInflation: num("housingInflation"),
+
+    // assets
+    initialAssets: num("initialAssets"),
+    assetReturn: num("assetReturn"),
+    assetVol: num("assetVol"),
+
+    // medical
+    copay6569: num("copay6569"),
+    copay7074: num("copay7074"),
+    copay75p: num("copay75p"),
+
+    useHCE: bool("useHCE"),
+    useManyTimes: bool("useManyTimes"),
+    hceTierUnder70: val("hceTierUnder70"),
+    hceTier70p: val("hceTier70p"),
+
+    medOutMedian: num("medOutMedian"),
+    medOutSigma: num("medOutSigma"),
+    medShockProb: num("medShockProb"),
+    medShockMonthsMean: num("medShockMonthsMean"),
+    medShockMedian: num("medShockMedian"),
+    medShockSigma: num("medShockSigma"),
+
+    medNonCoveredMedian: num("medNonCoveredMedian"),
+    medNonCoveredSigma: num("medNonCoveredSigma"),
+    medicalInflation: num("medicalInflation"),
+    useOutAnnualCap: bool("useOutAnnualCap"),
+
+    // care
+    useCare: bool("useCare"),
+    careLifetimeProb: num("careLifetimeProb"),
+    careCopayRate: parseFloat(val("careCopayRate")),
+    careCapTier: val("careCapTier"),
+    useCareCap: bool("useCareCap"),
+
+    careStartMean: num("careStartMean"),
+    careStartSd: num("careStartSd"),
+    careServiceMedian: num("careServiceMedian"),
+    careServiceSigma: num("careServiceSigma"),
+    careNonCovHomeMedian: num("careNonCovHomeMedian"),
+    careNonCovFacilityMedian: num("careNonCovFacilityMedian"),
+    careNonCovSigma: num("careNonCovSigma"),
+    careOneTime: num("careOneTime"),
+    careDurationMedian: num("careDurationMedian"),
+    careDurationSigma: num("careDurationSigma"),
+    careFacilityProb: num("careFacilityProb"),
+    careInflation: num("careInflation"),
+
+    // health correlation
+    healthSigma: num("healthSigma"),
+    healthToMedK: num("healthToMedK"),
+    healthToShockK: num("healthToShockK"),
+    healthToCareProbK: num("healthToCareProbK"),
+    healthToCareStartShift: num("healthToCareStartShift"),
+    healthToMortK: num("healthToMortK"),
+
+    // events
+    events: readEventsFromUI(),
+    generalInflation: num("generalInflation"),
+    funeralCost: num("funeralCost"),
+
+    // annual refunds
+    useCombinedCap: bool("useCombinedCap"),
+    fiscalStartMonth: intv("fiscalStartMonth"),
+    comboTierUnder70: val("comboTierUnder70"),
+    comboTier70p: val("comboTier70p"),
+
+    // output
+    keepResults: bool("keepResults"),
+  };
+}
+
+// ---------------------------
+// Run / Stop
+// ---------------------------
+const runBtn = document.getElementById("runBtn");
+const stopBtn = document.getElementById("stopBtn");
+const progress = document.getElementById("progress");
+const progressText = document.getElementById("progressText");
+
+function setRunning(isRunning){
+  runBtn.disabled = isRunning;
+  stopBtn.disabled = !isRunning;
+}
+
+function drawHistogram(hist){
+  const canvas = document.getElementById("hist");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  const counts = hist.counts;
+  const maxC = Math.max(...counts, 1);
+  const pad = 34;
+  const innerW = W - pad*2;
+  const innerH = H - pad*2;
+
+  // axes
+  ctx.globalAlpha = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(pad, pad);
+  ctx.lineTo(pad, pad + innerH);
+  ctx.lineTo(pad + innerW, pad + innerH);
+  ctx.stroke();
+
+  const barW = innerW / counts.length;
+  for (let i=0;i<counts.length;i++){
+    const c = counts[i];
+    const h = innerH * (c / maxC);
+    const x = pad + i * barW;
+    const y = pad + innerH - h;
+    ctx.globalAlpha = 0.85;
+    ctx.fillRect(x, y, Math.max(1, barW-1), h);
+  }
+
+  ctx.globalAlpha = 0.9;
+  ctx.font = "12px system-ui, sans-serif";
+  ctx.fillText("log10(不足額+1)", pad, H - 10);
+  ctx.save();
+  ctx.translate(12, pad + innerH/2);
+  ctx.rotate(-Math.PI/2);
+  ctx.fillText("試行数", 0, 0);
+  ctx.restore();
+}
+
+function setKPIs(s){
+  document.getElementById("kpiMean").textContent = yen(s.mean);
+  document.getElementById("kpiMedian").textContent = yen(s.median);
+  document.getElementById("kpiMin").textContent = yen(s.min);
+  document.getElementById("kpiMax").textContent = yen(s.max);
+  document.getElementById("kpiRuin").textContent = pct(s.ruinProb);
+
+  const extra = [
+    `N=${s.N.toLocaleString("ja-JP")}`,
+    `p10=${yen(s.p10)}`,
+    `p25=${yen(s.p25)}`,
+    `p75=${yen(s.p75)}`,
+    `p90=${yen(s.p90)}`,
+    `p95=${yen(s.p95)}`,
+    `平均死亡年齢=${s.deathMean.toFixed(1)}歳`,
+    `年次還付 平均=${yen(s.refundMean)}`,
+    `医療(総) 平均=${yen(s.medMean)}`,
+    `介護(総) 平均=${yen(s.careMean)}`,
+    `経過=${(s.elapsedMs/1000).toFixed(2)}s`,
+    `Gompertz(b=${s.gompertz.b.toExponential(3)}, c=${s.gompertz.c.toExponential(3)})`,
+  ].join("\n");
+
+  document.getElementById("extraStats").textContent = extra;
+}
+
+runBtn.addEventListener("click", () => {
+  latestResultsForCsv = null;
+  document.getElementById("downloadCsvBtn").disabled = true;
+
+  const params = gatherParams();
+
+  if (params.nTrials > 200000){
+    alert("試行回数が大きすぎます（上限 200,000）。");
+    return;
+  }
+
+  if (worker) worker.terminate();
+  worker = makeWorker();
+
+  setRunning(true);
+  progress.value = 0;
+  progressText.textContent = "開始…";
+
+  worker.onmessage = (e) => {
+    const msg = e.data;
+    if (msg.type === "progress"){
+      progress.value = msg.done / msg.total;
+      progressText.textContent = `${msg.done.toLocaleString("ja-JP")} / ${msg.total.toLocaleString("ja-JP")} 試行`;
+    }
+    if (msg.type === "done"){
+      progress.value = 1;
+      progressText.textContent = "完了";
+      setRunning(false);
+      setKPIs(msg.summary);
+      drawHistogram(msg.histogram);
+
+      if (msg.results){
+        latestResultsForCsv = msg.results;
+        document.getElementById("downloadCsvBtn").disabled = false;
+      }
+    }
+  };
+
+  worker.postMessage({ type:"run", params });
+});
+
+stopBtn.addEventListener("click", () => {
+  if (worker) worker.terminate();
+  worker = null;
+  setRunning(false);
+  progressText.textContent = "停止しました";
+});
+
+// ---------------------------
+// Presets & Save/Load
+// ---------------------------
+document.getElementById("pensionPreset").addEventListener("change", (e) => {
+  const v = e.target.value;
+  const box = document.getElementById("pensionMonthly");
+  if (v === "kosei") box.value = "147360";
+  if (v === "kokumin") box.value = "57700";
+});
+
+document.getElementById("housingType").addEventListener("change", () => {
+  const t = val("housingType");
+  document.getElementById("rentMonthly").disabled = (t !== "rent");
+  document.getElementById("condoMonthly").disabled = (t !== "owner_condo");
+  document.getElementById("propertyTaxMonthly").disabled = (t === "rent");
+});
+
+document.getElementById("loadBtn").addEventListener("click", () => {
+  document.getElementById("loadFile").click();
+});
+
+document.getElementById("loadFile").addEventListener("change", async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const text = await file.text();
+  const obj = JSON.parse(text);
+
+  const setIf = (id, v) => { if (v !== undefined && document.getElementById(id)) document.getElementById(id).value = v; };
+  const setChk = (id, v) => { if (v !== undefined && document.getElementById(id)) document.getElementById(id).checked = !!v; };
+
+  // basic
+  setIf("nTrials", obj.nTrials); setIf("seed", obj.seed); setIf("sex", obj.sex);
+
+  // income
+  setIf("pensionMonthly", obj.pensionMonthly);
+  setIf("otherIncomeMonthly", obj.otherIncomeMonthly);
+  setIf("pensionGrowth", obj.pensionGrowth);
+
+  // living/housing
+  setIf("livingMonthly", obj.livingMonthly);
+  setIf("livingInflation", obj.livingInflation);
+  setChk("useAgeScale", obj.useAgeScale);
+  setIf("scale70s", obj.scale70s);
+  setIf("scale80p", obj.scale80p);
+
+  setIf("housingType", obj.housingType);
+  setIf("rentMonthly", obj.rentMonthly);
+  setIf("condoMonthly", obj.condoMonthly);
+  setIf("propertyTaxMonthly", obj.propertyTaxMonthly);
+  setIf("housingInflation", obj.housingInflation);
+
+  // assets
+  setIf("initialAssets", obj.initialAssets);
+  setIf("assetReturn", obj.assetReturn);
+  setIf("assetVol", obj.assetVol);
+
+  // medical
+  setIf("copay6569", obj.copay6569);
+  setIf("copay7074", obj.copay7074);
+  setIf("copay75p", obj.copay75p);
+
+  setChk("useHCE", obj.useHCE);
+  setChk("useManyTimes", obj.useManyTimes);
+  setIf("hceTierUnder70", obj.hceTierUnder70);
+  setIf("hceTier70p", obj.hceTier70p);
+
+  setIf("medOutMedian", obj.medOutMedian);
+  setIf("medOutSigma", obj.medOutSigma);
+  setIf("medShockProb", obj.medShockProb);
+  setIf("medShockMonthsMean", obj.medShockMonthsMean);
+  setIf("medShockMedian", obj.medShockMedian);
+  setIf("medShockSigma", obj.medShockSigma);
+  setIf("medNonCoveredMedian", obj.medNonCoveredMedian);
+  setIf("medNonCoveredSigma", obj.medNonCoveredSigma);
+  setIf("medicalInflation", obj.medicalInflation);
+  setChk("useOutAnnualCap", obj.useOutAnnualCap);
+
+  // care
+  setChk("useCare", obj.useCare);
+  setIf("careLifetimeProb", obj.careLifetimeProb);
+  setIf("careCopayRate", String(obj.careCopayRate));
+  setIf("careCapTier", obj.careCapTier);
+  setChk("useCareCap", obj.useCareCap);
+
+  setIf("careStartMean", obj.careStartMean);
+  setIf("careStartSd", obj.careStartSd);
+  setIf("careServiceMedian", obj.careServiceMedian);
+  setIf("careServiceSigma", obj.careServiceSigma);
+  setIf("careNonCovHomeMedian", obj.careNonCovHomeMedian);
+  setIf("careNonCovFacilityMedian", obj.careNonCovFacilityMedian);
+  setIf("careNonCovSigma", obj.careNonCovSigma);
+  setIf("careOneTime", obj.careOneTime);
+  setIf("careDurationMedian", obj.careDurationMedian);
+  setIf("careDurationSigma", obj.careDurationSigma);
+  setIf("careFacilityProb", obj.careFacilityProb);
+  setIf("careInflation", obj.careInflation);
+
+  // health
+  setIf("healthSigma", obj.healthSigma);
+  setIf("healthToMedK", obj.healthToMedK);
+  setIf("healthToShockK", obj.healthToShockK);
+  setIf("healthToCareProbK", obj.healthToCareProbK);
+  setIf("healthToCareStartShift", obj.healthToCareStartShift);
+  setIf("healthToMortK", obj.healthToMortK);
+
+  // events
+  if (Array.isArray(obj.events)){
+    const byId = new Map(obj.events.map(x => [x.id, x]));
+    [...document.querySelectorAll("#eventsTable tbody tr")].forEach(row => {
+      const id = row.dataset.id;
+      const ev = byId.get(id);
+      if (!ev) return;
+      row.querySelector(".ev_on").checked = !!ev.enabled;
+      row.querySelector(".ev_prob").value = ev.annualProb ?? row.querySelector(".ev_prob").value;
+      row.querySelector(".ev_median").value = ev.median ?? row.querySelector(".ev_median").value;
+      row.querySelector(".ev_sigma").value = ev.sigma ?? row.querySelector(".ev_sigma").value;
+      row.querySelector(".ev_cd").value = ev.cooldown ?? row.querySelector(".ev_cd").value;
+    });
+  }
+
+  // general + funeral
+  setIf("generalInflation", obj.generalInflation);
+  setIf("funeralCost", obj.funeralCost);
+  setIf("maxAge", obj.maxAge);
+
+  // annual caps
+  setChk("useCombinedCap", obj.useCombinedCap);
+  setIf("fiscalStartMonth", obj.fiscalStartMonth);
+  setIf("comboTierUnder70", obj.comboTierUnder70);
+  setIf("comboTier70p", obj.comboTier70p);
+
+  // mortality params
+  setIf("survAge", obj.survAge);
+  if (obj.mortality){
+    setIf("leMale", obj.mortality.leMale);
+    setIf("leFemale", obj.mortality.leFemale);
+    setIf("surv90Male", obj.mortality.surv90Male);
+    setIf("surv90Female", obj.mortality.surv90Female);
+  }
+
+  setChk("keepResults", obj.keepResults);
+
+  document.getElementById("housingType").dispatchEvent(new Event("change"));
+  alert("設定を読み込みました。");
+});
+
+document.getElementById("saveBtn").addEventListener("click", () => {
+  const params = gatherParams();
+  const blob = new Blob([JSON.stringify(params, null, 2)], {type:"application/json"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "retirement_sim_settings.json";
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+// ---------------------------
+// CSV download
+// ---------------------------
+document.getElementById("downloadCsvBtn").addEventListener("click", () => {
+  if (!latestResultsForCsv) return;
+  const { gaps, ruins, deathAges, refundTotals, medTotals, careTotals } = latestResultsForCsv;
+  const N = gaps.length;
+
+  let csv = "trial,gap_total_yen,ruined,death_age,total_refund,total_med_oop,total_care_oop\n";
+  for (let i=0;i<N;i++){
+    csv += [
+      i+1,
+      Math.round(gaps[i]),
+      ruins[i],
+      deathAges[i].toFixed(2),
+      Math.round(refundTotals[i]),
+      Math.round(medTotals[i]),
+      Math.round(careTotals[i]),
+    ].join(",") + "\n";
+  }
+  const blob = new Blob([csv], {type:"text/csv"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "retirement_sim_results.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+// ---------------------------
+// Init
+// ---------------------------
+buildEventsTable();
+document.getElementById("housingType").dispatchEvent(new Event("change"));
+</script>
+</body>
+</html>
