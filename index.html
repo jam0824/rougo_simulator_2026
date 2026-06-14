@@ -36,7 +36,7 @@
     }
     h1 { font-size: 20px; font-weight: 700; margin: 0 auto 8px; max-width: 1500px; letter-spacing: .01em; }
     .grid { display: grid; grid-template-columns: 1fr; gap: 16px; max-width: 1500px; margin: 0 auto; }
-    @media (min-width: 1040px) { .grid { grid-template-columns: 520px 1fr; align-items: start; } }
+    @media (min-width: 1140px) { .grid { grid-template-columns: 640px 1fr; align-items: start; } }
 
     .card {
       border: 1px solid var(--border); border-radius: var(--radius);
@@ -167,7 +167,7 @@
 <body>
   <h1>老後資金ギャップ（65歳→死亡）モンテカルロ・シミュレーター（単身）</h1>
   <div class="intro small muted" style="max-width:1500px;margin:0 auto;">
-    ・不足額（ギャップ）は「各月の支出 − 収入（年金等）」のプラス分を累計した値（ネット：高額療養費/高額介護/合算の年次還付を反映）。<br/>
+    ・不足額は「65歳時点の資産を取り崩しても賄いきれず足りなくなった額」（＝死亡時の資産残高がマイナスになった分）。資産・運用と、各月の支出−収入（年金等／高額療養費等の年次還付込み）を反映。プラスで終われば不足額は0。<br/>
     ・医療は「外来（ベース）＋入院等（ショック）」に分け、70歳以上の外来上限/多数回該当を近似反映。<br/>
     ・介護は「介護保険サービス（上限対象）＋食費/居住費等（上限対象外）」に分け、高額介護サービス費を適用。<br/>
   </div>
@@ -797,6 +797,11 @@
       </div>
 
       <div style="margin-top:12px;">
+        <div class="small muted">不足額の分布（資産を取り崩しても足りなかった額。0＝資産でまかなえた）</div>
+        <canvas id="gapHist" width="980" height="280"></canvas>
+      </div>
+
+      <div style="margin-top:12px;">
         <div class="small muted">死亡時の資産残高の分布（赤い棒＝残高マイナス＝破綻）</div>
         <canvas id="hist" width="980" height="280"></canvas>
       </div>
@@ -1101,7 +1106,6 @@ function makeWorker(){
     const pensionInfl = Math.pow(1 + p.pensionGrowth, 1/12);
 
     // asset return
-    const useAssets = p.initialAssets > 0 || p.assetReturn !== 0 || p.assetVol !== 0;
     const muM = Math.pow(1 + p.assetReturn, 1/12) - 1;
     const sigM = p.assetVol / Math.sqrt(12);
 
@@ -1257,7 +1261,6 @@ function makeWorker(){
       let coveredAnnualSum = 0;   // covered (insured) OOP: medical insured oop + care service oop after caps
 
       let asset = p.initialAssets;
-      let gap = 0;
       let ruined = 0;
 
       let pensionM = p.pensionMonthly;
@@ -1419,24 +1422,22 @@ function makeWorker(){
 
         const expense = living + housing + medOOP + careOOP + evCost + funeral;
 
-        const shortfall = Math.max(0, expense - income);
-        gap += shortfall;
-
-        if (useAssets){
-          asset += (income - expense);
-          if (p.assetReturn !== 0 || p.assetVol !== 0){
-            const r = muM + sigM * rngN();
-            asset *= (1 + r);
-          }
-          if (asset < 0 && !ruined) ruined = 1;
+        // running balance: start from initial assets, net income-expense each month
+        // (apply investment returns when set). 不足額 is derived from the final balance.
+        asset += (income - expense);
+        if (p.assetReturn !== 0 || p.assetVol !== 0){
+          const r = muM + sigM * rngN();
+          asset *= (1 + r);
         }
+        if (asset < 0 && !ruined) ruined = 1;
 
         // update income for next month
         pensionM *= pensionInfl;
         otherIncomeM *= pensionInfl;
       }
 
-      gaps[i] = gap;
+      // 不足額 = 資産を取り崩しても足りなかった額（死亡時残高がマイナスになった分）
+      gaps[i] = Math.max(0, -asset);
       ruins[i] = ruined;
       refundTotals[i] = totalRefund;
       medTotals[i] = totalMed;
@@ -1473,23 +1474,20 @@ function makeWorker(){
     const careMean = Array.from(careTotals).reduce((s,x)=>s+x,0) / N;
     const taxMean = Array.from(taxTotals).reduce((s,x)=>s+x,0) / N;
 
-    // final asset stats (only meaningful when assets are modeled)
-    let assetStats = null;
-    if (useAssets){
-      const assetsArr = Array.from(finalAssets);
-      assetsArr.sort((a,b)=>a-b);
-      const aMin = assetsArr[0];
-      const aMax = assetsArr[assetsArr.length-1];
-      const aMean = assetsArr.reduce((s,x)=>s+x,0) / assetsArr.length;
-      const aMedian = (assetsArr.length % 2 === 1)
-        ? assetsArr[(assetsArr.length-1)/2]
-        : 0.5 * (assetsArr[assetsArr.length/2 - 1] + assetsArr[assetsArr.length/2]);
-      assetStats = { min: aMin, max: aMax, mean: aMean, median: aMedian };
-    }
+    // final asset stats
+    const assetsArr = Array.from(finalAssets);
+    assetsArr.sort((a,b)=>a-b);
+    const aMin = assetsArr[0];
+    const aMax = assetsArr[assetsArr.length-1];
+    const aMean = assetsArr.reduce((s,x)=>s+x,0) / assetsArr.length;
+    const aMedian = (assetsArr.length % 2 === 1)
+      ? assetsArr[(assetsArr.length-1)/2]
+      : 0.5 * (assetsArr[assetsArr.length/2 - 1] + assetsArr[assetsArr.length/2]);
+    const assetStats = { min: aMin, max: aMax, mean: aMean, median: aMedian };
 
     // balance histogram over [lo, hi] (linear yen; balance can be negative = 破綻)
-    let histLo = assetStats ? assetStats.min : 0;
-    let histHi = assetStats ? assetStats.max : 0;
+    let histLo = assetStats.min;
+    let histHi = assetStats.max;
     if (histHi - histLo < 1){ histLo -= 1; histHi += 1; }
     const histCounts = new Uint32Array(histBins);
     const histW = (histHi - histLo) / histBins;
@@ -1497,6 +1495,18 @@ function makeWorker(){
       let b = Math.floor((finalAssets[i] - histLo) / histW);
       b = Math.max(0, Math.min(histBins - 1, b));
       histCounts[b]++;
+    }
+
+    // gap histogram (不足額; always >= 0)
+    let gapLo = Math.min(0, min);
+    let gapHi = max;
+    if (gapHi - gapLo < 1){ gapHi = gapLo + 1; }
+    const gapCounts = new Uint32Array(histBins);
+    const gapW = (gapHi - gapLo) / histBins;
+    for (let i=0;i<N;i++){
+      let b = Math.floor((gaps[i] - gapLo) / gapW);
+      b = Math.max(0, Math.min(histBins - 1, b));
+      gapCounts[b]++;
     }
 
     const elapsedMs = Date.now() - tStart;
@@ -1516,7 +1526,8 @@ function makeWorker(){
         elapsedMs,
         gompertz: gomBase,
       },
-      histogram:{ bins: histBins, min: histLo, max: histHi, counts: Array.from(histCounts), hasAssets: !!assetStats }
+      histogram:{ bins: histBins, min: histLo, max: histHi, counts: Array.from(histCounts), hasAssets: true },
+      gapHistogram:{ bins: histBins, min: gapLo, max: gapHi, counts: Array.from(gapCounts) }
     };
 
     if (p.keepResults){
@@ -1676,8 +1687,13 @@ function yenShort(v){
   return Math.round(v) + "円";
 }
 
-function drawHistogram(hist, summary){
-  const canvas = document.getElementById("hist");
+function drawHistogram(canvasId, hist, opts){
+  opts = opts || {};
+  const colorBySign = !!opts.colorBySign;   // red bars / zero line for negative values
+  const shortfallMode = !!opts.shortfallMode; // red bars for positive shortfall (>0)
+  const caption = opts.caption || "";
+  const markers = opts.markers || [];
+  const canvas = document.getElementById(canvasId);
   const ctx = canvas.getContext("2d");
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0,0,W,H);
@@ -1697,8 +1713,6 @@ function drawHistogram(hist, summary){
   const BAR_NEG = "#dc2626"; // red: negative balance (破綻)
   const TEXT = "#5b6573";
   const ZERO = "#1f2933";    // 破綻境界 (balance = 0)
-  const MEDIAN = "#0e9f6e";  // green
-  const MEAN = "#b45309";    // amber
 
   // map a yen balance value to an x pixel (linear scale)
   const xForYen = (v) => pad + ((Math.max(lo, Math.min(hi, v)) - lo) / span) * innerW;
@@ -1725,13 +1739,15 @@ function drawHistogram(hist, summary){
     const h = innerH * (c / maxC);
     const x = pad + i * barW;
     const y = pad + innerH - h;
+    const binLo = lo + i * (span / counts.length);
     const center = lo + (i + 0.5) * (span / counts.length);
-    ctx.fillStyle = (center < 0) ? BAR_NEG : BAR_POS;
+    const isShortfall = (colorBySign && center < 0) || (shortfallMode && binLo > 1e-9);
+    ctx.fillStyle = isShortfall ? BAR_NEG : BAR_POS;
     ctx.fillRect(x, y, Math.max(1, barW-1.5), h);
   }
 
   // 0 line (破綻境界) — only if 0 is within range
-  if (lo < 0 && hi > 0){
+  if (colorBySign && lo < 0 && hi > 0){
     const x0 = xForYen(0);
     ctx.strokeStyle = ZERO;
     ctx.lineWidth = 1.5;
@@ -1778,7 +1794,8 @@ function drawHistogram(hist, summary){
   // caption
   ctx.font = "12px system-ui, sans-serif";
   ctx.fillStyle = TEXT;
-  ctx.fillText(hist.hasAssets ? "死亡時の資産残高（赤=破綻）" : "死亡時の資産残高（資産・運用を設定すると分布が広がります）", pad + innerW/2, axisY + 24);
+  ctx.textAlign = "center";
+  ctx.fillText(caption, pad + innerW/2, axisY + 24);
 
   // y-axis label
   ctx.save();
@@ -1789,31 +1806,27 @@ function drawHistogram(hist, summary){
   ctx.fillText("試行数", 0, 0);
   ctx.restore();
 
-  // median / mean vertical markers (from asset stats)
-  const stats = summary && summary.assetStats;
-  if (stats){
-    const drawMarker = (v, color, label, slot) => {
-      if (!Number.isFinite(v)) return;
-      const x = xForYen(v);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([5, 4]);
-      ctx.beginPath();
-      ctx.moveTo(x, pad);
-      ctx.lineTo(x, axisY);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      const text = label + " " + yenShort(v);
-      ctx.font = "11px system-ui, sans-serif";
-      ctx.fillStyle = color;
-      ctx.textBaseline = "top";
-      const ty = pad + 2 + slot * 15;
-      if (x > pad + innerW - 80){ ctx.textAlign = "right"; ctx.fillText(text, x - 5, ty); }
-      else { ctx.textAlign = "left"; ctx.fillText(text, x + 5, ty); }
-    };
-    drawMarker(stats.median, MEDIAN, "中央値", 0);
-    drawMarker(stats.mean, MEAN, "平均", 1);
-  }
+  // median / mean vertical markers
+  markers.forEach((mk, slot) => {
+    const v = mk.value;
+    if (!Number.isFinite(v)) return;
+    const x = xForYen(v);
+    ctx.strokeStyle = mk.color;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x, pad);
+    ctx.lineTo(x, axisY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const text = mk.label + " " + yenShort(v);
+    ctx.font = "11px system-ui, sans-serif";
+    ctx.fillStyle = mk.color;
+    ctx.textBaseline = "top";
+    const ty = pad + 2 + slot * 15;
+    if (x > pad + innerW - 80){ ctx.textAlign = "right"; ctx.fillText(text, x - 5, ty); }
+    else { ctx.textAlign = "left"; ctx.fillText(text, x + 5, ty); }
+  });
 
   ctx.textAlign = "start";
   ctx.textBaseline = "alphabetic";
@@ -1886,7 +1899,24 @@ runBtn.addEventListener("click", () => {
       progressText.textContent = "完了";
       setRunning(false);
       setKPIs(msg.summary);
-      drawHistogram(msg.histogram, msg.summary);
+      const MEDIAN_COLOR = "#0e9f6e", MEAN_COLOR = "#b45309";
+      drawHistogram("gapHist", msg.gapHistogram, {
+        caption: "不足額（資産を取り崩しても足りなかった額。赤＝不足あり）",
+        colorBySign: false,
+        shortfallMode: true,
+        markers: [
+          { value: msg.summary.median, color: MEDIAN_COLOR, label: "中央値" },
+          { value: msg.summary.mean, color: MEAN_COLOR, label: "平均" },
+        ],
+      });
+      drawHistogram("hist", msg.histogram, {
+        caption: "死亡時の資産残高（赤=破綻）",
+        colorBySign: true,
+        markers: msg.summary.assetStats ? [
+          { value: msg.summary.assetStats.median, color: MEDIAN_COLOR, label: "中央値" },
+          { value: msg.summary.assetStats.mean, color: MEAN_COLOR, label: "平均" },
+        ] : [],
+      });
 
       if (msg.results){
         latestResultsForCsv = msg.results;
