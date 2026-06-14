@@ -1,6 +1,6 @@
 # 老後資金ギャップ（65歳→死亡）モンテカルロ・シミュレーター（単身） 現行仕様（実装版）
 
-更新日: 2026-02-22  
+更新日: 2026-06-14  
 実装形態: **単一HTML（サーバー不要） + Web Worker**  
 目的: **年金等の収入では賄いきれない支出（不足額）**を、数万回のランダム試行で分布として推計する
 
@@ -25,10 +25,15 @@
 - 年次還付（外来年間合算 / 医療・介護合算）の平均
 - 医療自己負担（総）平均
 - 介護自己負担（総）平均
+- 税・社会保険料（総）平均
 - 実行時間、Gompertzパラメータ
+- 死亡時の資産残高（資産モデルON時のみ）: 中央値 / 平均 / 最小 / 最大
 
 ### 1.4 分布可視化（実装済）
-- `log10(gap_total + 1)` のヒストグラム（50 bin、レンジ 0〜8）
+- **死亡時の資産残高（finalAssets）のヒストグラム**（50 bin、線形・円目盛り、残高の最小〜最大レンジ）
+  - 残高マイナス（破綻）の棒は赤、プラスは青で表示し、0円（破綻境界）に縦線を引く
+  - 中央値・平均の縦線マーカー（資産残高ベース）を重ねる
+  - 資産・運用を未設定の場合は全試行0に集中（資産を設定すると分布が広がる）
 
 ---
 
@@ -70,12 +75,21 @@
 ## 4. 収入モデル（年金など）
 
 ### 4.1 月次収入
-- `income_month = pension_month + other_income_month + refunds_month`
+- `income_month = pension_month + other_income_month - tax_deduction_month + refunds_month`
 - `refunds_month` は年次還付を年度末（または死亡月）にまとめて加算（タイムラグ無し近似）
 
 ### 4.2 年金改定（簡易）
 - 毎月: `pension_month *= (1 + pensionGrowth)^(1/12)`
 - **現行実装では otherIncomeMonthly も同じ改定率で増加**（必要なら別レート化が拡張点）
+
+### 4.3 税・社会保険料の天引き（実装済 / 既定ON）
+- 国民健康保険料・後期高齢者医療保険料・介護保険料・住民税等を、**年齢帯別の実効控除率**で近似し、額面収入から差し引く。
+- `useTaxDeduction` がONのとき:
+  - `rate = (age < 75) ? taxRate6574 : taxRate75p`
+  - `tax_deduction_month = (pension_month + other_income_month) * rate`
+- **年次還付の加算より前に控除**するため、還付分は控除対象に含めない。
+- 既定値: `taxRate6574 = 8%`、`taxRate75p = 10%`（75歳以降は後期高齢者医療・介護保険料の上昇を粗く反映）。
+- 注: 実効率による近似であり、所得に応じた厳密なブラケット計算は行わない。
 
 ---
 
@@ -96,6 +110,14 @@
 
 ### 5.3 葬儀（死亡月に一時）
 - `funeralCost * generalInfl`
+
+### 5.4 インフレ率の確率化（実装済 / 既定OFF）
+- 試行ごとに**共通のインフレ偏差** `inflShock ~ Normal(0, inflationSigma)` を1つサンプルし、
+  **支出側インフレ率（生活費・住居・医療・介護・一般）に同率加算**する。
+  - 例: `livingInfl = (1 + max(-0.99, livingInflation + inflShock))^(1/12)`（他カテゴリも同様）
+- 年金改定率 `pensionGrowth` は政策連動のため**固定**（実質的な購買力の目減りリスクを表現）。
+- 各支出インフレ係数は**試行ごと**に算出（従来はループ外で固定値だった）。
+- `inflationSigma = 0` のときは乱数を**消費しない**実装とし、シードが同じなら従来結果と完全一致（後方互換）。
 
 ---
 
@@ -203,6 +225,8 @@
 - 在宅: `LogNormal(careNonCovHomeMedian, careNonCovSigma) * careInfl`
 - 施設: `LogNormal(careNonCovFacilityMedian, careNonCovSigma) * careInfl`
 - 介護開始月に `careOneTime`（一時費用）を上限対象外に加算
+- **施設入居一時金（実装済 / 既定0）**: その試行が施設移行（`facility=true`）の場合のみ、介護開始月に
+  `careFacilityEntryFee * careInfl` を上限対象外に加算（有料老人ホーム/サ高住の入居一時金の近似）。0で無効。
 
 #### 7.2.5 介護自己負担（総）
 - `careOOP = careServiceCopay + careNonCovered`
@@ -279,6 +303,8 @@
 
 for trial in 1..N:
 z ~ Normal(0, healthSigma)
+inflShock ~ Normal(0, inflationSigma)   // sigma=0 のときは乱数を引かない
+livingInfl/housingInfl/medicalInfl/careInfl/generalInfl = (1 + rate + inflShock)^(1/12)
 
 deathAge = sampleGompertz(bexp(healthToMortKz), c)
 deathMonth = floor((deathAge-65)*12)
@@ -297,6 +323,9 @@ for m in 0..deathMonth:
 age = 65 + m/12
 
 income = pension + otherIncome
+if useTaxDeduction:
+  rate = (age < 75) ? taxRate6574 : taxRate75p
+  income -= (pension + otherIncome) * rate    // 還付加算より前に控除
 
 living = livingMonthly * livingInfl^m * (ageScale)
 housing = housingByType * housingInfl^m
@@ -313,7 +342,7 @@ careOOP = 0
 if inCare:
   svc10 = LN(careServiceMedian, careServiceSigma) * careInfl^m
   svcCopay = min(svc10*careCopayRate, careCapTierCap) (if ON)
-  nonCov = LN(home/facility median, careNonCovSigma)*careInfl^m + oneTimeIfStart
+  nonCov = LN(home/facility median, careNonCovSigma)*careInfl^m + oneTimeIfStart + facilityEntryFeeIfStartAndFacility
   careOOP = svcCopay + nonCov
 
 // 年次合算対象（近似）
@@ -348,17 +377,25 @@ otherIncome *= pensionInfl
 
 ## 12. UI（入力項目一覧：現行）
 
+> **%入力規約**: 年率・確率・負担割合などの欄は**UI上は%で入力**（例: 2 = 2%、45 = 45%）し、内部では小数（0.02 / 0.45）に換算して計算する。**保存JSONは小数のまま**（後方互換）で、読込時に自動で%表示へ変換する。
+
 ### 12.1 実行設定
 - 試行回数 `nTrials`
 - 乱数シード `seed`
 - 性別 `sex`
 
-### 12.2 収入
+### 12.2 資産（初期資産・運用）【最上部に配置】
+- 初期資産 `initialAssets`
+- 運用期待リターン `assetReturn` / 運用ボラ `assetVol`
+- 破綻確率・死亡時資産残高の前提となる任意項目（0で無効）
+
+### 12.3 収入
 - 年金タイプ（プリセット）/ 年金月額 `pensionMonthly`
 - その他収入 `otherIncomeMonthly`
 - 年金改定率 `pensionGrowth`
+- 税・社会保険料の天引き `useTaxDeduction`（既定ON）/ 実効控除率 `taxRate6574`, `taxRate75p`
 
-### 12.3 生活費・住居
+### 12.4 生活費・住居
 - 生活費月額 `livingMonthly`
 - 生活費インフレ `livingInflation`
 - 年齢スケール `useAgeScale, scale70s, scale80p`
@@ -366,7 +403,7 @@ otherIncome *= pensionInfl
 - 家賃/管理費/固定資産税 等
 - 住居インフレ `housingInflation`
 
-### 12.4 医療
+### 12.5 医療
 - 窓口負担（65-69/70-74/75+）
 - 高額療養費ON `useHCE`
 - 多数回該当ON `useManyTimes`
@@ -378,7 +415,7 @@ otherIncome *= pensionInfl
 - 医療インフレ `medicalInflation`
 - 外来年間合算ON `useOutAnnualCap`
 
-### 12.5 介護
+### 12.6 介護
 - 介護ON `useCare`
 - 生涯発生確率 `careLifetimeProb`
 - 介護負担割合 `careCopayRate`（1〜3割）
@@ -387,11 +424,12 @@ otherIncome *= pensionInfl
 - サービス10割分布（中央値/σ）
 - 上限対象外（在宅/施設中央値、σ）
 - 一時費用 `careOneTime`
+- 施設入居一時金 `careFacilityEntryFee`（施設移行時, 既定0）
 - 継続期間（中央値/σ）
 - 施設移行確率 `careFacilityProb`
 - 介護インフレ `careInflation`
 
-### 12.6 健康相関
+### 12.7 健康相関
 - `healthSigma`
 - `healthToMedK`
 - `healthToShockK`
@@ -399,21 +437,22 @@ otherIncome *= pensionInfl
 - `healthToCareStartShift`
 - `healthToMortK`
 
-### 12.7 突発イベント
+### 12.8 突発イベント
 - イベント別 ON/OFF、年確率、中央値、σ、クールダウン、適用範囲
 - 一般インフレ `generalInflation`
+- インフレ不確実性 `inflationSigma`（±%/年, 既定0で無効）
 - 葬儀費用 `funeralCost`
 
-### 12.8 年次合算（任意）
+### 12.9 年次合算（任意）
 - 合算ON `useCombinedCap`
 - 年度開始月 `fiscalStartMonth`（既定8）
 - 所得区分（70未満） `comboTierUnder70`
 - 所得区分（70以上） `comboTier70p`
 
-### 12.9 寿命モデル
+### 12.10 寿命モデル
 - `leMale, leFemale, surv90Male, surv90Female, survAge, maxAge`
 
-### 12.10 出力（重い）
+### 12.11 出力（重い）
 - `keepResults`（試行ごとの配列保持 → CSV可能）
 
 ---
@@ -423,7 +462,8 @@ otherIncome *= pensionInfl
 ### 13.1 画面表示
 - KPI（平均/中央値/最小/最大）
 - 破綻確率
-- 追加統計（p10/p25/p75/p90/p95、平均死亡年齢、平均還付、医療/介護平均、実行時間）
+- 追加統計（p10/p25/p75/p90/p95、平均死亡年齢、平均還付、医療/介護/税・社保平均、実行時間）
+- 死亡時の資産残高（資産モデルON時のみ表示）: 中央値/平均/最小/最大
 
 ### 13.2 CSV（keepResults ON時）
 列:
@@ -434,12 +474,14 @@ otherIncome *= pensionInfl
 - `total_refund`
 - `total_med_oop`
 - `total_care_oop`
+- `tax_total_yen`
+- `final_assets_yen`
 
 ---
 
 ## 14. 既知の簡略化 / 注意点（現行）
 
-- 税・社会保険料（国保/後期/介護保険料）を厳密には計算していない（生活費に含める前提）
+- 税・社会保険料（国保/後期/介護保険料・住民税）は**年齢帯別の実効控除率で近似**（所得別の厳密なブラケット計算は省略）
 - 高額療養費は世帯合算/外来と入院の厳密な分離、食事代、医療機関別の集計などを省略
 - 年次還付（外来年間合算/合算療養費）は **年度末に一括受給**（タイムラグ無し近似）
 - 介護の補足給付（食費/居住費軽減）や住宅改修・福祉用具購入の保険給付は未実装（上限対象外として近似）
@@ -450,8 +492,13 @@ otherIncome *= pensionInfl
 ## 15. 変更履歴（要約）
 
 - v0: ベース（生活費・住居・医療・介護・突発イベント・葬儀・資産・Gompertz寿命）
-- v1（現行）:
+- v1:
   - 高額療養費：70未満A〜E、70以上区分、外来上限、**多数回該当**
   - 介護：1〜3割 + **高額介護サービス費（月上限）**
   - 年次：外来年間合算（一般 14.4万円） + 医療・介護合算療養費（任意ON）
   - 医療×介護×寿命の相関：潜在健康リスク `z` を導入
+- v2（現行）:
+  - **税・社会保険料の天引き**（年齢帯別の実効控除率, 既定ON）
+  - **施設入居一時金**（施設移行時の一時金, 上限対象外, 既定0）
+  - **インフレ率の確率化**（試行ごとの共通ショックを支出インフレに加算, 既定0で無効・乱数列不変）
+  - UI: %入力規約（UIは%, JSONは小数）/ 死亡時資産残高の統計 / CSVに `tax_total_yen`・`final_assets_yen` 列を追加
